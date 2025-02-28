@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"github.com/joho/godotenv"
+	"github.com/slack-go/slack"
 	"io"
 	"log"
 	"net/http"
@@ -18,6 +19,43 @@ func computeHMAC256(payload []byte, secret string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+type SlackNotifier struct {
+	Token   string
+	Channel string
+}
+
+type Event any
+
+type StarEvent struct {
+	Sender string
+	Repo   string
+}
+
+func (s *SlackNotifier) Notify(eventType string, event StarEvent) error {
+
+	text := ""
+
+	if eventType == "created" {
+		text = event.Sender + " starred " + event.Repo
+
+	} else {
+		text = event.Sender + " unstarred " + event.Repo
+
+	}
+
+	api := slack.New(s.Token)
+
+	_, _, err := api.PostMessage(s.Channel, slack.MsgOptionText(text, false))
+
+	if err != nil {
+		log.Println("Error sending message to Slack")
+
+		return err
+	}
+
+	return nil
+}
+
 func main() {
 
 	err := godotenv.Load()
@@ -25,6 +63,11 @@ func main() {
 	if err != nil {
 		log.Fatal("Error loading .env file")
 
+	}
+
+	slack := SlackNotifier{
+		Token:   os.Getenv("SLACK_TOKEN"),
+		Channel: os.Getenv("SLACK_CHANNEL"),
 	}
 
 	secret := os.Getenv("WEBHOOK_SECRET")
@@ -57,7 +100,7 @@ func main() {
 			return
 		}
 
-		var event any
+		var event Event
 
 		err = json.Unmarshal(reqBody, &event)
 
@@ -66,8 +109,35 @@ func main() {
 			return
 		}
 
-		log.Printf("Event received: %v\n", event)
+		// sender -> login (who starred the repo)
 
+		//repository url -> html_url
+
+		starEvent := StarEvent{
+			Sender: event.(map[string]any)["sender"].(map[string]any)["login"].(string),
+			Repo:   event.(map[string]any)["repository"].(map[string]any)["html_url"].(string),
+		}
+
+		switch event.(map[string]any)["action"] {
+		case "created":
+			log.Println("New star created")
+
+			err := slack.Notify("created", starEvent)
+
+			if err != nil {
+				log.Println("Error sending notification to Slack")
+			}
+		case "deleted":
+			log.Println("Star deleted")
+			err := slack.Notify("deleted", starEvent)
+
+			if err != nil {
+				log.Println("Error sending notification to Slack")
+			}
+
+		}
+
+		log.Println("Notification sent to Slack")
 	})
 
 	log.Println("Starting server on port 8080")
